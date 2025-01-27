@@ -90,7 +90,7 @@ class WizardStochasticProblem:
             if self.state[WIZARDS][wizard_name]['location'] != self.state[HORCRUX][horcrux_name]['location']:
                 return False
             return True
-        
+
         def _is_wait_action_legal(wait_action):
             wizard_name = wait_action[1]
             return wizard_name in self.state[WIZARDS].keys()
@@ -107,7 +107,7 @@ class WizardStochasticProblem:
             return True
         if action == "terminate":
             return True
-        
+
         if len(action) != len(self.state[WIZARDS].keys()):
             logging.error(f"You had given {len(action)} atomic commands, while there are {len(self.state[WIZARDS])}"
                           f" wizards in the problem!")
@@ -124,7 +124,7 @@ class WizardStochasticProblem:
                     logging.error(
                         f"Destroy action {atomic_action} is illegal!")
                     return False
-                
+
             elif atomic_action[0] == 'wait':
                 if not _is_wait_action_legal(atomic_action):
                     logging.error(f"Wait action {atomic_action} is illegal!")
@@ -209,7 +209,7 @@ class WizardStochasticProblem:
                 de_loc = de_stats["path"][index]
                 if wiz_loc == de_loc:
                     self.score -= DEATH_EATER_PENALTY
-                    
+
 
 
 
@@ -259,13 +259,12 @@ def main():
             my_problem.run_round()
         except EndOfGame:
             continue
-    for an_input in []: #additional_inputs:
+    for an_input in []:  # additional_inputs:
         try:
             my_problem = WizardStochasticProblem(an_input)
             my_problem.run_round()
         except EndOfGame:
             continue
-
 
 if __name__ == '__main__':
     main()

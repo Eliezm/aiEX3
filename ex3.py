@@ -1,5 +1,8 @@
 # ex3.py
 
+##############
+### Getting rid of redundant libraries
+##############
 import itertools
 from collections import deque, defaultdict
 from typing import Tuple, Dict, List
@@ -10,6 +13,11 @@ ids = ['207476763']  # Replace with your actual ID(s)
 
 # Define a hashable State class
 class State:
+    ##############
+    ### State holds wizard positions in a sorted tuple, horcruxes states with 'alive' indicator,
+    ### death_eater tuple of tuples with current positions of death eaters
+    ### and parameter for number of turns left in the current state
+    ##############
     def __init__(self, wizard_positions, horcrux_states, death_eater_indices, turns_left):
         """
         Initialize the state.
@@ -47,6 +55,9 @@ class OptimalWizardAgent:
         Initialize the agent with the initial state.
         Perform Finite-Horizon Value Iteration to compute the optimal policy.
         """
+        ##############
+        ### 1. creating the map. 2. initializing wizards, horcruxes, DE, and all passable positions as a set of indicies.
+        ##############
         # Convert map to tuple of tuples for hashability
         self.map = tuple(tuple(row) for row in initial['map'])
         self.wizards_initial = initial['wizards']
@@ -57,6 +68,9 @@ class OptimalWizardAgent:
         self.height = len(self.map)
         self.passable = self._compute_passable_positions()
 
+        ##############
+        ### save the paths of DE in a set of paths, and the names of the horcruxes and the wizards
+        ##############
         # Initialize death eater paths
         self.death_eaters_paths = {}
         for de_name, de_info in self.death_eaters_initial.items():
@@ -67,6 +81,11 @@ class OptimalWizardAgent:
 
         # Initialize wizards
         self.wizard_names = list(self.wizards_initial.keys())
+
+
+        ##############
+        ### save a dictionary where each horcrux's name is assigned to a possible movement location, with the probability
+        ##############
 
         # Precompute all possible horcrux locations and movement probabilities
         self.horcrux_info = {}
@@ -115,7 +134,7 @@ class OptimalWizardAgent:
         self.value_current = defaultdict(float)  # V_current[s]
         self.policy = {}  # policy[s]
 
-        # Perform Finite-Horizon Value Iteration
+        # Perform Finite-Horizon Value Iteration using Backward Induction
         self.value_iteration()
 
     def act(self, state):
@@ -144,6 +163,9 @@ class OptimalWizardAgent:
             death_eater_indices=death_eater_indices,
             turns_left=turns_left
         )
+        ##############
+        ### returning the action based on a set policy that we calculated
+        ##############
 
         # Retrieve the optimal action from the policy
         action = self.policy.get(current_state, tuple(("wait", wizard) for wizard in self.wizard_names))
@@ -153,30 +175,35 @@ class OptimalWizardAgent:
     def value_iteration(self):
         """
         Perform Finite-Horizon Value Iteration to compute the optimal value function and policy.
+        Uses Backward Induction from t=0 to t=T.
         """
         gamma = 1  # No discount factor for finite-horizon
 
-        # Iterate from t=1 to t=T (turns_to_go)
-        for t in range(1, self.turns_to_go + 1):
+        # Initialize the value function for t=0 (terminal states)
+        # At t=0, no more turns left; no rewards or penalties
+        # Thus, V_prev[s] = 0 for all states (already default)
 
+        # Iterate backward from t=1 to t=T (turns_to_go)
+        for t in range(1, self.turns_to_go + 1):
             self.value_current = defaultdict(float)
             policy_current = {}
 
+            print(f"Starting Value Iteration for turn {t}")
+
             # Enumerate all possible states with turns_left = t
+            # Note: For large t and state spaces, this is computationally intensive
 
             # Enumerate wizard positions
             wizard_positions_options = []
-
-            for wizard_name, wizard_info in self.wizards_initial.items():
-                # Assuming each wizard can be in any passable position
-                # Note: In a more optimized version, you should consider wizard positions based on previous states
+            for wizard_name in self.wizard_names:
+                # Wizards can be in any passable position
                 wizard_pos_options = list(self.passable)
                 wizard_positions_options.append([(wizard_name, pos) for pos in wizard_pos_options])
 
             # Enumerate horcrux states
             horcrux_states_options = []
-
-            for h_name, h_info in self.horcrux_info.items():
+            for h_name in self.horcrux_names:
+                h_info = self.horcrux_info[h_name]
                 # Each horcrux can be in one of its possible locations or destroyed
                 options = [(h_name, loc, True) for loc in [h_info['current_location']] + list(h_info['possible_locations'])]
                 options.append((h_name, (-1, -1), False))  # Destroyed state
@@ -184,13 +211,9 @@ class OptimalWizardAgent:
 
             # Enumerate death eater indices
             death_eater_indices_options = []
-
-            for de_name, de_info in self.death_eater_info.items():
-                path_length = len(de_info['path'])
+            for de_name in self.death_eater_info.keys():
+                path_length = len(self.death_eater_info[de_name]['path'])
                 death_eater_indices_options.append([(de_name, idx) for idx in range(path_length)])
-
-            # Possible turns_left = t
-            turns_left = t
 
             # Cartesian product to generate all possible states with turns_left = t
             for wizard_pos in itertools.product(*wizard_positions_options):
@@ -200,14 +223,14 @@ class OptimalWizardAgent:
                             wizard_positions=wizard_pos,
                             horcrux_states=horcrux_state,
                             death_eater_indices=de_idx,
-                            turns_left=turns_left
+                            turns_left=t
                         )
 
                         # Generate possible actions
                         actions = self._generate_actions(state)
 
                         if not actions:
-                            # Assign minimal utility
+                            # If no actions, assign minimal utility
                             best_action = tuple(("wait", wizard) for wizard in self.wizard_names)
                             best_utility = 0
                             if best_utility > self.value_current[state]:
@@ -235,7 +258,7 @@ class OptimalWizardAgent:
             self.value_prev = self.value_current
             self.policy.update(policy_current)
 
-            print(f"Completed value iteration for turn {t}")
+            print(f"Completed Value Iteration for turn {t}")
 
         print("Value Iteration completed.")
 
@@ -602,9 +625,3 @@ class WizardAgent:
                     neighbors.append((new_x, new_y))
         return neighbors
 
-
-def create_harrypotter_problem(game):
-    if game['optimal']:
-        return OptimalWizardAgent(game)
-    else:
-        return WizardAgent(game)
