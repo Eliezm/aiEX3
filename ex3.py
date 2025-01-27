@@ -1,8 +1,5 @@
 # ex3.py
 
-##############
-### Getting rid of redundant libraries
-##############
 import itertools
 from collections import deque, defaultdict
 from typing import Tuple, Dict, List
@@ -13,11 +10,11 @@ ids = ['207476763']  # Replace with your actual ID(s)
 
 # Define a hashable State class
 class State:
-    ##############
-    ### State holds wizard positions in a sorted tuple, horcruxes states with 'alive' indicator,
-    ### death_eater tuple of tuples with current positions of death eaters
-    ### and parameter for number of turns left in the current state
-    ##############
+    """
+    State represents the current configuration of the game, including wizard positions,
+    horcrux states, death eater indices, and remaining turns.
+    """
+
     def __init__(self, wizard_positions, horcrux_states, death_eater_indices, turns_left):
         """
         Initialize the state.
@@ -55,10 +52,7 @@ class OptimalWizardAgent:
         Initialize the agent with the initial state.
         Perform Finite-Horizon Value Iteration to compute the optimal policy.
         """
-        ##############
-        ### 1. creating the map. 2. initializing wizards, horcruxes, DE, and all passable positions as a set of indicies.
-        ##############
-        # Convert map to tuple of tuples for hashability
+        # 1. Creating the map and initializing wizards, horcruxes, death eaters, and passable positions
         self.map = tuple(tuple(row) for row in initial['map'])
         self.wizards_initial = initial['wizards']
         self.horcruxes_initial = initial['horcrux']
@@ -68,26 +62,12 @@ class OptimalWizardAgent:
         self.height = len(self.map)
         self.passable = self._compute_passable_positions()
 
-        ##############
-        ### save the paths of DE in a set of paths, and the names of the horcruxes and the wizards
-        ##############
-        # Initialize death eater paths
-        self.death_eaters_paths = {}
-        for de_name, de_info in self.death_eaters_initial.items():
-            self.death_eaters_paths[de_name] = de_info['path']
-
-        # Initialize horcrux states
+        # 2. Saving death eater paths, horcruxes, and wizards names
+        self.death_eaters_paths = {de_name: de_info['path'] for de_name, de_info in self.death_eaters_initial.items()}
         self.horcrux_names = list(self.horcruxes_initial.keys())
-
-        # Initialize wizards
         self.wizard_names = list(self.wizards_initial.keys())
 
-
-        ##############
-        ### save a dictionary where each horcrux's name is assigned to a possible movement location, with the probability
-        ##############
-
-        # Precompute all possible horcrux locations and movement probabilities
+        # 3. Saving horcrux movement information
         self.horcrux_info = {}
         for h_name, h_info in self.horcruxes_initial.items():
             self.horcrux_info[h_name] = {
@@ -96,16 +76,15 @@ class OptimalWizardAgent:
                 'prob_change_location': h_info['prob_change_location']
             }
 
-        # Precompute death eater movement probabilities
+        # 4. Saving death eater movement probabilities
         self.death_eater_info = {}
         for de_name, de_info in self.death_eaters_initial.items():
-            path = de_info['path']
             self.death_eater_info[de_name] = {
-                'path': path,
+                'path': de_info['path'],
                 'current_index': de_info['index']  # Ensure consistent key naming
             }
 
-        # Initialize the initial state
+        # 5. Initializing the initial state
         initial_wizard_positions = tuple(
             (name, tuple(info['location'])) for name, info in self.wizards_initial.items()
         )
@@ -125,23 +104,19 @@ class OptimalWizardAgent:
             turns_left=self.turns_to_go
         )
 
-        # Initialize Value Function and Policy
-        # We will use two dictionaries: V_prev and V_current
-        # V_prev holds values for t-1
-        # V_current holds values for t
-
+        # 6. Initialize Value Function and Policy
         self.value_prev = defaultdict(float)  # V_prev[s]
         self.value_current = defaultdict(float)  # V_current[s]
         self.policy = {}  # policy[s]
 
-        # Perform Finite-Horizon Value Iteration using Backward Induction
+        # 7. Perform Finite-Horizon Value Iteration using Backward Induction
         self.value_iteration()
 
     def act(self, state):
         """
         Decide the next action based on the current state using the precomputed policy.
         """
-        # Construct the State object
+        # Construct the State object from the current state
         wizard_positions = tuple(
             (name, tuple(info['location'])) for name, info in state['wizards'].items()
         )
@@ -163,9 +138,6 @@ class OptimalWizardAgent:
             death_eater_indices=death_eater_indices,
             turns_left=turns_left
         )
-        ##############
-        ### returning the action based on a set policy that we calculated
-        ##############
 
         # Retrieve the optimal action from the policy
         action = self.policy.get(current_state, tuple(("wait", wizard) for wizard in self.wizard_names))
@@ -175,13 +147,9 @@ class OptimalWizardAgent:
     def value_iteration(self):
         """
         Perform Finite-Horizon Value Iteration to compute the optimal value function and policy.
-        Uses Backward Induction from t=0 to t=T.
+        Uses Backward Induction from t=1 to t=T.
         """
         gamma = 1  # No discount factor for finite-horizon
-
-        # Initialize the value function for t=0 (terminal states)
-        # At t=0, no more turns left; no rewards or penalties
-        # Thus, V_prev[s] = 0 for all states (already default)
 
         # Iterate backward from t=1 to t=T (turns_to_go)
         for t in range(1, self.turns_to_go + 1):
@@ -204,8 +172,16 @@ class OptimalWizardAgent:
             horcrux_states_options = []
             for h_name in self.horcrux_names:
                 h_info = self.horcrux_info[h_name]
-                # Each horcrux can be in one of its possible locations or destroyed
-                options = [(h_name, loc, True) for loc in [h_info['current_location']] + list(h_info['possible_locations'])]
+                # Each horcrux can be in one of its possible new locations or stay, or be destroyed
+                possible_new_locs = h_info['possible_locations']
+                prob_change = h_info['prob_change_location']
+                num_new_locs = len(possible_new_locs)
+
+                # Exclude current location from possible new locations if not intended
+                # If current location is included, it represents staying in place
+                # Based on your description, staying is handled separately
+                options = [(h_name, loc, True) for loc in possible_new_locs]
+                options.append((h_name, h_info['current_location'], True))  # Stay in current location
                 options.append((h_name, (-1, -1), False))  # Destroyed state
                 horcrux_states_options.append(options)
 
@@ -216,6 +192,7 @@ class OptimalWizardAgent:
                 death_eater_indices_options.append([(de_name, idx) for idx in range(path_length)])
 
             # Cartesian product to generate all possible states with turns_left = t
+            total_states = 0
             for wizard_pos in itertools.product(*wizard_positions_options):
                 for horcrux_state in itertools.product(*horcrux_states_options):
                     for de_idx in itertools.product(*death_eater_indices_options):
@@ -225,6 +202,8 @@ class OptimalWizardAgent:
                             death_eater_indices=de_idx,
                             turns_left=t
                         )
+
+                        total_states += 1
 
                         # Generate possible actions
                         actions = self._generate_actions(state)
@@ -243,7 +222,7 @@ class OptimalWizardAgent:
                         best_action = None
 
                         for action in actions:
-                            expected_value = self._compute_expected_value(state, action, t)
+                            expected_value = self._compute_expected_value(state, action, t, gamma)
                             if expected_value > best_utility:
                                 best_utility = expected_value
                                 best_action = action
@@ -258,7 +237,7 @@ class OptimalWizardAgent:
             self.value_prev = self.value_current
             self.policy.update(policy_current)
 
-            print(f"Completed Value Iteration for turn {t}")
+            print(f"Completed Value Iteration for turn {t} with {total_states} states processed.")
 
         print("Value Iteration completed.")
 
@@ -389,12 +368,12 @@ class OptimalWizardAgent:
         # Generate all possible combinations of death eater movements
         death_eater_names = list(death_eater_movements.keys())
         death_eater_move_lists = [death_eater_movements[name] for name in death_eater_names]
-        all_de_moves = list(itertools.product(*death_eater_move_lists))
+        all_de_moves = itertools.product(*death_eater_move_lists)
 
         # Generate all possible combinations of horcrux movements
         horcrux_names = list(horcrux_movements.keys())
         horcrux_move_lists = [horcrux_movements[name] for name in horcrux_names]
-        all_h_moves = list(itertools.product(*horcrux_move_lists))
+        all_h_moves = itertools.product(*horcrux_move_lists)
 
         expected_value = 0
 
@@ -625,3 +604,9 @@ class WizardAgent:
                     neighbors.append((new_x, new_y))
         return neighbors
 
+
+def create_harrypotter_problem(game):
+    if game['optimal']:
+        return OptimalWizardAgent(game)
+    else:
+        return WizardAgent(game)
