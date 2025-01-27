@@ -1,4 +1,4 @@
-# ex3_refactored.py
+# ex3.py
 
 import itertools
 import math
@@ -7,7 +7,6 @@ from collections import deque, defaultdict
 from heapq import heappush, heappop
 from typing import Tuple, Dict, List, Set
 from functools import lru_cache
-import time
 
 # Define your IDs
 ids = ['207476763']  # Replace with your actual ID(s)
@@ -43,17 +42,14 @@ class State:
 
 class OptimalWizardAgent:
     """
-    An optimal wizard agent that uses a Hybrid Policy and Value Iteration to compute the optimal policy.
+    An optimal wizard agent that uses Synchronous Value Iteration to compute the optimal policy.
     """
 
     def __init__(self, initial):
         """
         Initialize the agent with the initial state.
-        Perform Hybrid Policy and Value Iteration to compute the optimal policy.
+        Perform Synchronous Value Iteration to compute the optimal policy.
         """
-        # Record the start time for initialization
-        self.init_start_time = time.time()
-
         # Convert map to tuple of tuples for hashability
         self.map = tuple(tuple(row) for row in initial['map'])
         self.wizards_initial = initial['wizards']
@@ -93,6 +89,9 @@ class OptimalWizardAgent:
                 'current_index': de_info['index']  # Ensure consistent key naming
             }
 
+        # Initialize all possible states
+        self.all_states = self._enumerate_all_states()
+
         # Initialize the initial state
         initial_wizard_positions = tuple(
             (name, tuple(info['location'])) for name, info in self.wizards_initial.items()
@@ -117,188 +116,52 @@ class OptimalWizardAgent:
         self.value_function = defaultdict(lambda: 0)
         self.policy = {}
 
-        # Perform Hybrid Policy and Value Iteration
-        self.hybrid_policy_value_iteration()
+        # Perform Synchronous Value Iteration
+        self.value_iteration()
 
-        # Record the end time for initialization
-        self.init_end_time = time.time()
-        self.init_duration = self.init_end_time - self.init_start_time
-        print(f"Initialization completed in {self.init_duration:.2f} seconds.\n")
-
-    def hybrid_policy_value_iteration(self):
+    def _enumerate_all_states(self):
         """
-        Perform a hybrid of Policy Iteration and Value Iteration to compute the optimal policy and value function.
+        Enumerate all possible states based on the initial configurations.
         """
-        gamma = 0.9  # Discount factor
-        epsilon = 1e-3  # Convergence threshold for policy evaluation
-        max_iterations = 1000  # To prevent infinite loops
+        all_states = set()
 
-        # Step 1: Initialize Policy Iteration
-        print("Step 1: Starting Policy Iteration")
-        self.initialize_policy()
+        # Possible wizard positions
+        wizard_positions = []
+        for wizard_name, wizard_info in self.wizards_initial.items():
+            wizard_positions.append([(wizard_name, pos) for pos in self.passable])
 
-        is_policy_stable = False
-        iteration = 0
+        # Possible horcrux states
+        horcrux_states = []
+        for h_name, h_info in self.horcruxes_initial.items():
+            horcrux_states.append([
+                (h_name, loc, True) for loc in [h_info['location']] + list(h_info['possible_locations'])
+            ] + [
+                (h_name, (-1, -1), False)
+            ])  # Include destroyed state
 
-        while not is_policy_stable and iteration < max_iterations:
-            print(f"\nPolicy Iteration Iteration {iteration + 1}")
-            # Policy Evaluation
-            self.policy_evaluation(gamma, epsilon)
+        # Possible death eater indices
+        death_eater_indices = []
+        for de_name, de_info in self.death_eater_info.items():
+            path = de_info['path']
+            death_eater_indices.append([(de_name, idx) for idx in range(len(path))])
 
-            # Policy Improvement
-            is_policy_stable = self.policy_improvement(gamma)
+        # Possible turns_left
+        turns_left = list(range(self.turns_to_go + 1))
 
-            print(f"Policy Iteration Iteration {iteration + 1} {'Converged' if is_policy_stable else 'Continues'}")
-            iteration += 1
+        # Cartesian product of all components
+        for w_pos in itertools.product(*wizard_positions):
+            for h_state in itertools.product(*horcrux_states):
+                for de_idx in itertools.product(*death_eater_indices):
+                    for t_left in turns_left:
+                        state = State(
+                            wizard_positions=w_pos,
+                            horcrux_states=h_state,
+                            death_eater_indices=de_idx,
+                            turns_left=t_left
+                        )
+                        all_states.add(state)
 
-            # Time Check: Ensure initialization does not exceed 300 seconds
-            if time.time() - self.init_start_time > 290:  # Leave buffer for other operations
-                print("Initialization time limit reached during Policy Iteration.")
-                break
-
-        print(f"\nPolicy Iteration completed in {iteration} iterations.")
-
-        # Step 2: Value Iteration Refinement
-        print("\nStep 2: Starting Value Iteration Refinement")
-        self.value_iteration_refinement(gamma, epsilon, max_iterations=1000)
-
-        print("Hybrid Policy and Value Iteration completed.\n")
-
-    def initialize_policy(self):
-        """
-        Initialize the policy with arbitrary actions (e.g., first available action).
-        """
-        # Initialize a random policy for the initial state
-        initial_policy = self._get_initial_policy_for_state(self.initial_state)
-        self.policy[self.initial_state] = initial_policy
-        print(f"Initialized policy for initial state: {self.initial_state} -> {initial_policy}")
-
-    def _get_initial_policy_for_state(self, state):
-        """
-        Assign the first available action for the state as the initial policy.
-        """
-        actions = self._generate_actions(state)
-        if actions:
-            return actions[0]
-        else:
-            return (("wait", self.wizard_names[0]),)
-
-    def policy_evaluation(self, gamma, epsilon):
-        """
-        Evaluate the current policy by computing the value function V(s) for all states.
-        Uses Iterative Policy Evaluation.
-        """
-        delta = float('inf')
-        while delta > epsilon:
-            delta = 0
-            new_value_function = self.value_function.copy()
-
-            # Iterate over all states that have been encountered in the policy
-            for state in self.policy.keys():
-                if state.turns_left == 0:
-                    # Terminal state
-                    remaining_horcruxes = sum(1 for h in state.horcrux_states if h[2])
-                    if remaining_horcruxes == 0:
-                        new_value = 100  # High reward for success
-                    else:
-                        new_value = -10 * remaining_horcruxes  # Penalty for each remaining horcrux
-                    if abs(new_value - self.value_function[state]) > delta:
-                        delta = abs(new_value - self.value_function[state])
-                    new_value_function[state] = new_value
-                    continue
-
-                action = self.policy[state]
-                expected_value = self._compute_expected_value(state, action, gamma)
-                if abs(expected_value - self.value_function[state]) > delta:
-                    delta = abs(expected_value - self.value_function[state])
-                new_value_function[state] = expected_value
-
-            self.value_function = new_value_function
-            print(f"Policy Evaluation: max delta = {delta}")
-
-            # Time Check: Ensure initialization does not exceed 300 seconds
-            if time.time() - self.init_start_time > 290:
-                print("Initialization time limit reached during Policy Evaluation.")
-                break
-
-    def policy_improvement(self, gamma):
-        """
-        Improve the policy based on the current value function.
-        Returns True if the policy is stable (no changes), False otherwise.
-        """
-        policy_stable = True
-        new_policy = {}
-
-        for state in list(self.policy.keys()):
-            if state.turns_left == 0:
-                continue  # No actions in terminal states
-
-            old_action = self.policy[state]
-            actions = self._generate_actions(state)
-            if not actions:
-                continue  # No possible actions to improve
-
-            best_action = None
-            best_utility = float('-inf')
-
-            for action in actions:
-                utility = self._compute_expected_value(state, action, gamma)
-                if utility > best_utility:
-                    best_utility = utility
-                    best_action = action
-
-            # Update the policy if a better action is found
-            if best_action != old_action:
-                new_policy[state] = best_action
-                policy_stable = False
-                print(f"Policy Improvement: State {state} changed action from {old_action} to {best_action}")
-            else:
-                new_policy[state] = old_action
-
-        self.policy = new_policy
-        return policy_stable
-
-    def value_iteration_refinement(self, gamma, epsilon, max_iterations=1000):
-        """
-        Perform Value Iteration to refine the value function after Policy Iteration.
-        """
-        iteration = 0
-        while iteration < max_iterations:
-            delta = 0
-            new_value_function = self.value_function.copy()
-
-            # Iterate over all states in the policy
-            for state in self.policy.keys():
-                if state.turns_left == 0:
-                    continue  # Skip terminal states
-
-                actions = self._generate_actions(state)
-                if not actions:
-                    continue  # No actions available
-
-                max_utility = float('-inf')
-                for action in actions:
-                    utility = self._compute_expected_value(state, action, gamma)
-                    if utility > max_utility:
-                        max_utility = utility
-
-                if abs(max_utility - self.value_function[state]) > delta:
-                    delta = abs(max_utility - self.value_function[state])
-                new_value_function[state] = max_utility
-
-            self.value_function = new_value_function
-            print(f"Value Iteration Refinement: Iteration {iteration + 1}, max delta = {delta}")
-
-            if delta < epsilon:
-                print("Value Iteration Refinement converged.")
-                break
-
-            iteration += 1
-
-            # Time Check: Ensure initialization does not exceed 300 seconds
-            if time.time() - self.init_start_time > 290:
-                print("Initialization time limit reached during Value Iteration Refinement.")
-                break
+        return all_states
 
     def act(self, state):
         """
@@ -332,6 +195,76 @@ class OptimalWizardAgent:
 
         # Return the action as a tuple
         return action  # Changed from (action,) to action
+
+    def value_iteration(self):
+        """
+        Perform Synchronous Value Iteration to compute the optimal value function and policy.
+        """
+        gamma = 1  # Discount factor
+        epsilon = 1  # Convergence threshold
+
+        # Initialize all state values to 0
+        for state in self.all_states:
+            self.value_function[state] = 0
+
+        # Iterate until convergence
+        iteration = 0
+        while True:
+            delta = 0
+            new_value_function = self.value_function.copy()
+            new_policy = self.policy.copy()
+
+            for state in self.all_states:
+                if state.turns_left == 0:
+                    # Terminal state
+                    remaining_horcruxes = sum(1 for h in state.horcrux_states if h[2])
+                    if remaining_horcruxes == 0:
+                        new_value_function[state] = 100  # High reward for success
+                    else:
+                        new_value_function[state] = -10 * remaining_horcruxes  # Penalty for each remaining horcrux
+                    continue  # No actions from terminal state
+
+                # Generate possible actions
+                actions = self._generate_actions(state)
+
+                if not actions:
+                    # No possible actions, assign a minimal utility
+                    best_action = ("wait", self.wizard_names[0]),
+                    best_utility = 0
+                else:
+                    best_utility = float('-inf')
+                    best_action = None
+
+                    for action in actions:
+                        expected_value = self._compute_expected_value(state, action, gamma)
+                        if expected_value > best_utility:
+                            best_utility = expected_value
+                            best_action = action
+
+                # Update the value function and policy
+                if abs(best_utility - self.value_function[state]) > delta:
+                    delta = abs(best_utility - self.value_function[state])
+
+                new_value_function[state] = best_utility
+                new_policy[state] = best_action
+
+            # Update the value function and policy
+            self.value_function = new_value_function
+            self.policy = new_policy
+
+            print(f"Iteration {iteration}: max delta = {delta}")
+            iteration += 1
+
+            # Check for convergence
+            if delta < epsilon:
+                break
+
+            # Optional: Limit the number of iterations to prevent infinite loops
+            if iteration >= 1000:
+                print("Value Iteration did not converge within the iteration limit.")
+                break
+
+        print(f"Value Iteration converged in {iteration} iterations.\n")
 
     def _generate_actions(self, state):
         """
@@ -515,48 +448,6 @@ class OptimalWizardAgent:
 
         return expected_value
 
-    def value_iteration_refinement(self, gamma, epsilon, max_iterations=1000):
-        """
-        Perform Value Iteration to refine the value function after Policy Iteration.
-        """
-        iteration = 0
-        while iteration < max_iterations:
-            delta = 0
-            new_value_function = self.value_function.copy()
-
-            # Iterate over all states in the policy
-            for state in self.policy.keys():
-                if state.turns_left == 0:
-                    continue  # Skip terminal states
-
-                actions = self._generate_actions(state)
-                if not actions:
-                    continue  # No actions available
-
-                max_utility = float('-inf')
-                for action in actions:
-                    utility = self._compute_expected_value(state, action, gamma)
-                    if utility > max_utility:
-                        max_utility = utility
-
-                if abs(max_utility - self.value_function[state]) > delta:
-                    delta = abs(max_utility - self.value_function[state])
-                new_value_function[state] = max_utility
-
-            self.value_function = new_value_function
-            print(f"Value Iteration Refinement: Iteration {iteration + 1}, max delta = {delta}")
-
-            if delta < epsilon:
-                print("Value Iteration Refinement converged.")
-                break
-
-            iteration += 1
-
-            # Time Check: Ensure initialization does not exceed 300 seconds
-            if time.time() - self.init_start_time > 290:  # Leave buffer for other operations
-                print("Initialization time limit reached during Value Iteration Refinement.")
-                break
-
     def _compute_passable_positions(self):
         """Precompute passable positions on the map."""
         passable = set()
@@ -582,6 +473,148 @@ class OptimalWizardAgent:
                 if neighbor not in visited:
                     visited.add(neighbor)
                     queue.append((neighbor, path + [neighbor]))
+        return None
+
+    def _get_neighbors(self, position, map_grid):
+        """Get passable neighbors for a given position."""
+        x, y = position
+        neighbors = []
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            new_x, new_y = x + dx, y + dy
+            if (0 <= new_x < len(map_grid)) and (0 <= new_y < len(map_grid[0])):
+                if map_grid[new_x][new_y] != 'I':
+                    neighbors.append((new_x, new_y))
+        return neighbors
+
+
+class WizardAgent:
+    """
+    A simple wizard agent that follows a heuristic-based approach to collect horcruxes
+    and avoid death eaters.
+    """
+
+    def __init__(self, initial):
+        """
+        Initialize the agent with the initial state.
+        """
+        # Convert map to tuple of tuples for hashability
+        self.map = tuple(tuple(row) for row in initial['map'])
+        self.wizards = initial['wizards']
+        self.horcruxes = initial['horcrux']
+        self.death_eaters = initial['death_eaters']
+        self.turns_to_go = initial['turns_to_go']
+        self.width = len(self.map[0])
+        self.height = len(self.map)
+        self.passable = self._compute_passable_positions()
+        self.targets = list(self.horcruxes.keys())
+        self.visited = set()
+        for wiz in self.wizards.values():
+            self.visited.add(wiz['location'])
+
+    def act(self, state):
+        """
+        Decide on the next action based on the current state.
+        """
+        actions = []
+        for wizard_name, wizard_info in state['wizards'].items():
+            current_pos = wizard_info['location']
+            # If on a horcrux, destroy it
+            horcrux_at_pos = self._find_horcrux_at_position(current_pos, state['horcrux'])
+            if horcrux_at_pos:
+                actions.append(("destroy", wizard_name, horcrux_at_pos))
+                continue
+
+            # Find the nearest horcrux
+            nearest_horcrux, path = self._find_nearest_horcrux(current_pos, state['horcrux'])
+            if nearest_horcrux and path:
+                if len(path) > 1:
+                    next_step = path[1]  # Move towards the horcrux
+                    actions.append(("move", wizard_name, next_step))
+                    self.visited.add(next_step)
+                else:
+                    # Already at the horcrux location
+                    actions.append(("destroy", wizard_name, nearest_horcrux))
+                continue
+
+            # If no horcruxes left, move towards Voldemort if possible
+            if not state['horcrux']:
+                voldemort_pos = self._find_voldemort_position(self.map)
+                if voldemort_pos and current_pos != voldemort_pos:
+                    path = self._find_path(current_pos, voldemort_pos, self.map)
+                    if path and len(path) > 1:
+                        next_step = path[1]
+                        actions.append(("move", wizard_name, next_step))
+                        self.visited.add(next_step)
+                        continue
+                    elif current_pos == voldemort_pos:
+                        actions.append(("kill", "Harry Potter"))
+                        continue
+
+            # If no specific action, wait
+            actions.append(("wait", wizard_name))
+
+        # If no actions decided, wait
+        if not actions:
+            for wizard_name in state['wizards'].keys():
+                actions.append(("wait", wizard_name))
+
+        return tuple(actions)
+
+    def _compute_passable_positions(self):
+        """Precompute passable positions on the map."""
+        passable = set()
+        for i in range(len(self.map)):
+            for j in range(len(self.map[0])):
+                if self.map[i][j] != 'I':
+                    passable.add((i, j))
+        return passable
+
+    def _find_horcrux_at_position(self, position, horcruxes):
+        """Check if there's a horcrux at the given position."""
+        for name, info in horcruxes.items():
+            if info['location'] == position:
+                return name
+        return None
+
+    def _find_nearest_horcrux(self, current_pos, horcruxes):
+        """Find the nearest horcrux and return its name and path."""
+        min_distance = float('inf')
+        nearest_horcrux = None
+        nearest_path = None
+        for name, info in horcruxes.items():
+            if info['location'] == (-1, -1):
+                continue  # Horcrux already destroyed
+            path = self._find_path(current_pos, tuple(info['location']), self.map)
+            if path and len(path) < min_distance:
+                min_distance = len(path)
+                nearest_horcrux = name
+                nearest_path = path
+        return nearest_horcrux, nearest_path
+
+    @lru_cache(maxsize=None)
+    def _find_path(self, start, goal, map_grid):
+        """Use BFS to find the shortest path from start to goal."""
+        queue = deque()
+        queue.append((start, [start]))
+        visited = set()
+        visited.add(start)
+        while queue:
+            current, path = queue.popleft()
+            if current == goal:
+                return path
+            neighbors = self._get_neighbors(current, map_grid)
+            for neighbor in neighbors:
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append((neighbor, path + [neighbor]))
+        return None
+
+    def _find_voldemort_position(self, map_grid):
+        """Find Voldemort's position on the map."""
+        for i, row in enumerate(map_grid):
+            for j, cell in enumerate(row):
+                if cell == 'V':
+                    return (i, j)
         return None
 
     def _get_neighbors(self, position, map_grid):

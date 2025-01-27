@@ -209,7 +209,7 @@ class WizardStochasticProblem:
                 de_loc = de_stats["path"][index]
                 if wiz_loc == de_loc:
                     self.score -= DEATH_EATER_PENALTY
-                    return
+                    
 
 
 
