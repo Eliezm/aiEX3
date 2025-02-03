@@ -3,6 +3,11 @@ from utils import PriorityQueue, argmin_random_tie, argmax_random_tie, shuffled,
 
 ids = ['207476763']
 
+
+##########################################
+# STATE REPRESENTATION
+##########################################
+
 class State:
     """
     A hashable state that contains:
@@ -11,6 +16,7 @@ class State:
       - death_eater_indices: tuple of (death_eater_name, path_index)
       - turns_left: integer
     """
+
     def __init__(self, wizard_positions, horcrux_states, death_eater_indices, turns_left):
         self.wizard_positions = tuple(sorted(wizard_positions))
         self.horcrux_states = tuple(sorted(horcrux_states))
@@ -33,13 +39,24 @@ class State:
                 f"turns_left={self.turns_left})")
 
 
+##########################################
+# OPTIMAL WIZARD AGENT (Iterative Value Iteration)
+##########################################
+
 class OptimalWizardAgent:
     """
-    This agent computes the optimal finite–horizon policy using full Bellman backups
-    (with expectation over stochastic transitions) and recursion with memoization.
-    It implements the optimal policy for the stochastic wizard problem up to an infinitesimal
-    approximation (i.e., when the number of turns is small, the backup approximates optimality).
+    This agent computes the optimal finite–horizon policy using iterative value iteration.
+    It first enumerates all reachable states from the initial state (up to the given number
+    of turns) and then performs iterative Bellman backups.
+
+    The number of iterations is set to:
+       num_iter = min(turns_to_go * 10, 1000)
+
+    This guarantees that the algorithm will run at most that many iterations and, if the state
+    space is not too huge, will compute the optimal policy (up to floating–point precision)
+    for the finite horizon.
     """
+
     def __init__(self, initial):
         # Read the map and time information.
         self.map = tuple(tuple(row) for row in initial['map'])
@@ -47,24 +64,106 @@ class OptimalWizardAgent:
         self.width = len(self.map[0])
         self.height = len(self.map)
 
+        # Get wizard, horcrux, and death eater info.
         self.wizards_initial = initial['wizards']
         self.horcruxes_initial = initial['horcrux']
         self.death_eaters_initial = initial['death_eaters']
 
+        # Compute passable positions.
         self.passable = self._compute_passable_positions()
 
+        # Save death eater paths.
         self.death_eaters_paths = {name: info['path'] for name, info in self.death_eaters_initial.items()}
 
+        # Build the initial state.
         initial_wizard_positions = tuple((name, tuple(info['location'])) for name, info in self.wizards_initial.items())
-        initial_horcrux_states = tuple((name, tuple(info['location']), True) for name, info in self.horcruxes_initial.items())
+        initial_horcrux_states = tuple(
+            (name, tuple(info['location']), True) for name, info in self.horcruxes_initial.items())
         initial_death_eater_indices = tuple((name, info['index']) for name, info in self.death_eaters_initial.items())
         self.initial_state = State(initial_wizard_positions, initial_horcrux_states, initial_death_eater_indices,
                                    self.turns_to_go)
 
-        self.memo = {}
-        self.optimal_policy = {}
+        # Run iterative value iteration to compute the value function and policy.
+        self.value_iteration()
 
-        self._compute_optimal_value(self.initial_state, self.turns_to_go)
+    def value_iteration(self):
+        # First, enumerate all reachable states from the initial state.
+        self.states_by_turn = self.compute_reachable_states()
+        all_states = set()
+        for states in self.states_by_turn.values():
+            all_states = all_states.union(states)
+
+        # Initialize the value function: terminal states (turns_left == 0) get value 0; others start at 0.
+        V = {s: 0 for s in all_states}
+
+        # Determine the maximum number of iterations.
+        num_iter = min(self.turns_to_go * 10, 1000)
+
+        # Perform iterative value iteration over all reachable states.
+        for i in range(num_iter):
+            newV = {}
+            for s in all_states:
+                # Terminal states (no turns left) have value 0.
+                if s.turns_left == 0:
+                    newV[s] = 0
+                else:
+                    best_val = float('-inf')
+                    actions = self._generate_actions(s)
+                    for a in actions:
+                        Q = 0
+                        transitions = self._get_transitions(s, a)
+                        for (p, s_prime, r) in transitions:
+                            Q += p * (r + V[s_prime])
+                        if Q > best_val:
+                            best_val = Q
+                    newV[s] = best_val
+            # Optionally, one could check for convergence here.
+            V = newV
+        # Extract a greedy policy from the final value function.
+        policy = {}
+        for s in all_states:
+            if s.turns_left == 0:
+                policy[s] = None
+            else:
+                best_val = float('-inf')
+                best_action = None
+                actions = self._generate_actions(s)
+                for a in actions:
+                    Q = 0
+                    transitions = self._get_transitions(s, a)
+                    for (p, s_prime, r) in transitions:
+                        Q += p * (r + V[s_prime])
+                    if Q > best_val:
+                        best_val = Q
+                        best_action = a
+                policy[s] = best_action
+        self.V = V
+        self.policy = policy
+
+    def compute_reachable_states(self):
+        """
+        Enumerate all states reachable from the initial state over the finite horizon.
+        Returns a dictionary mapping turns_left (an integer) to a set of states with that many turns.
+        """
+        T = self.turns_to_go
+        states_by_turn = {t: set() for t in range(T + 1)}
+        frontier = [self.initial_state]
+        visited = set()
+        while frontier:
+            s = frontier.pop()
+            if s in visited:
+                continue
+            visited.add(s)
+            t = s.turns_left
+            states_by_turn[t].add(s)
+            if t > 0:
+                actions = self._generate_actions(s)
+                for a in actions:
+                    transitions = self._get_transitions(s, a)
+                    for (p, s_prime, r) in transitions:
+                        if s_prime not in visited:
+                            frontier.append(s_prime)
+        return states_by_turn
 
     def act(self, state_dict):
         """
@@ -77,35 +176,11 @@ class OptimalWizardAgent:
         death_eater_indices = tuple((name, info['index']) for name, info in state_dict['death_eaters'].items())
         turns_left = state_dict['turns_to_go']
         current_state = State(wizard_positions, horcrux_states, death_eater_indices, turns_left)
-        key = (current_state, turns_left)
-        if key in self.optimal_policy:
-            return self.optimal_policy[key]
+        if current_state in self.policy and self.policy[current_state] is not None:
+            return self.policy[current_state]
         else:
             wizard_names = list(state_dict['wizards'].keys())
             return tuple(("wait", name) for name in wizard_names)
-
-    def _compute_optimal_value(self, state, t):
-        """
-        Recursively compute the optimal expected value for a given state and horizon t.
-        Also record the optimal joint action in self.optimal_policy.
-        """
-        if t == 0:
-            return 0
-        key = (state, t)
-        if key in self.memo:
-            return self.memo[key]
-        best_val = float('-inf')
-        best_action = None
-        for action in self._generate_actions(state):
-            exp_val = 0
-            for (p, next_state, immediate) in self._get_transitions(state, action):
-                exp_val += p * (immediate + self._compute_optimal_value(next_state, t - 1))
-            if exp_val > best_val:
-                best_val = exp_val
-                best_action = action
-        self.memo[key] = best_val
-        self.optimal_policy[key] = best_action
-        return best_val
 
     def _generate_actions(self, state):
         """
@@ -134,7 +209,7 @@ class OptimalWizardAgent:
         """
         Given a state and a joint action, return a list of (p, new_state, immediate_reward)
         tuples representing the stochastic outcomes.
-        The wizard actions are applied deterministically, then the stochastic moves
+        Wizard actions are applied deterministically; then the stochastic moves
         of death eaters and horcruxes are enumerated.
         """
         # 1. Apply wizard actions.
@@ -146,7 +221,7 @@ class OptimalWizardAgent:
             wiz_name = atomic[1]
             if act_type == "destroy":
                 horcrux_name = atomic[2]
-                immediate_reward += 2  # Reward for destroying a horcrux.
+                immediate_reward += 2
                 for i, (h_name, h_pos, exists) in enumerate(new_horcrux_states):
                     if h_name == horcrux_name and exists:
                         new_horcrux_states[i] = (h_name, h_pos, False)
@@ -157,7 +232,7 @@ class OptimalWizardAgent:
                     if w_name == wiz_name:
                         new_wizard_positions[i] = (w_name, new_pos)
                         break
-
+            # "wait" leaves the wizard’s position unchanged.
         # 2. Enumerate death eater outcomes.
         de_outcomes_list = []
         for de_name, index in state.death_eater_indices:
@@ -174,11 +249,10 @@ class OptimalWizardAgent:
                     outcomes.append((L - 1, 0.5))
                     outcomes.append((L - 2, 0.5))
                 else:
-                    outcomes.append((index - 1, 1/3))
-                    outcomes.append((index, 1/3))
-                    outcomes.append((index + 1, 1/3))
+                    outcomes.append((index - 1, 1 / 3))
+                    outcomes.append((index, 1 / 3))
+                    outcomes.append((index + 1, 1 / 3))
             de_outcomes_list.append((de_name, outcomes))
-
         # 3. Enumerate horcrux outcomes.
         hor_outcomes_list = []
         for (h_name, pos, exists) in new_horcrux_states:
@@ -194,8 +268,7 @@ class OptimalWizardAgent:
                     for loc in possible:
                         outcomes.append((tuple(loc), p_change / num_possible, True))
                 hor_outcomes_list.append((h_name, outcomes))
-
-        # 4. Combine outcomes over death eaters and horcruxes.
+        # 4. Combine outcomes.
         de_combos = list(itertools.product(*[outs for (_, outs) in de_outcomes_list]))
         hor_combos = list(itertools.product(*[outs for (_, outs) in hor_outcomes_list]))
         transitions = []
@@ -216,19 +289,18 @@ class OptimalWizardAgent:
                     h_name = hor_outcomes_list[idx][0]
                     new_hor_states.append((h_name, new_pos, exists))
                 total_prob = prob_de * prob_hor
-                # Compute penalty: subtract 1 point for each wizard sharing a cell with a death eater.
                 penalty = 0
                 for w_name, w_pos in new_wizard_positions:
                     if w_pos in de_positions:
                         penalty -= 1
                 total_immediate = immediate_reward + penalty
-                new_state = State(tuple(new_wizard_positions), tuple(new_hor_states), tuple(new_de_indices),
-                                  state.turns_left - 1)
+                new_state = State(tuple(new_wizard_positions), tuple(new_hor_states),
+                                  tuple(new_de_indices), state.turns_left - 1)
                 transitions.append((total_prob, new_state, total_immediate))
         return transitions
 
     def _compute_passable_positions(self):
-        """Return a set of coordinates (i,j) for cells that are passable (i.e. cells with 'P' or 'V')."""
+        """Return a set of coordinates (i,j) for cells with 'P' or 'V'."""
         passable = set()
         for i in range(len(self.map)):
             for j in range(len(self.map[0])):
@@ -237,20 +309,21 @@ class OptimalWizardAgent:
         return passable
 
 
+##########################################
+# HEURISTIC WIZARD AGENT
+##########################################
+
 class WizardAgent:
     """
-    A heuristic-based wizard agent that computes a “safe” path toward an active horcrux.
-    The enhanced Dijkstra-like search adds extra cost for:
-      - Each move (base cost 1)
-      - Cells adjacent to death eaters (3× per adjacent death eater)
-      - Revisited cells (penalty of 2 per revisit)
-    Each candidate target horcrux is scored by:
-      • A bonus of 10 for eventually destroying it,
-      • Minus the computed safe-path cost,
-      • Minus twice the cumulative risk (total adjacent death eater counts along the path),
-      • Plus a bonus proportional to the wizard’s current safety (Manhattan distance to the nearest death eater).
-    If no safe path is found, the agent moves to the neighbor that maximizes safety.
+    A heuristic–based wizard agent that uses a multi–criteria evaluation to select actions.
+    It computes a safe path toward an active horcrux using an enhanced Dijkstra–like search.
+    The cost per step is:
+         cost = 1 + 3 × (# adjacent death eaters) + (2 if the cell was visited before)
+    The candidate score for a horcrux target is:
+         score = 10 − (safe-path cost) − 2×(cumulative risk) + 0.5×(current safety)
+    If no safe path is found, the agent chooses a fallback move that maximizes safety.
     """
+
     def __init__(self, initial):
         self.map = tuple(tuple(row) for row in initial['map'])
         self.wizards = initial['wizards']
@@ -260,13 +333,11 @@ class WizardAgent:
         self.width = len(self.map[0])
         self.height = len(self.map)
         self.passable = self._compute_passable_positions()
-        # For each wizard, track visited cells to discourage loops.
         self.visited = {wiz: set() for wiz in self.wizards.keys()}
 
     def act(self, state):
         actions = []
         de_positions = self._get_death_eater_positions(state)
-        # Build a dictionary of active horcruxes (ignore those that have been destroyed)
         active_horcruxes = {}
         for h_name, info in state['horcrux'].items():
             if info['location'] != (-1, -1):
@@ -341,7 +412,6 @@ class WizardAgent:
         return positions
 
     def _count_adjacent_de(self, pos, de_positions):
-        """Count how many death eaters are adjacent (8-neighborhood) to pos."""
         count = 0
         x, y = pos
         for dx in [-1, 0, 1]:
@@ -353,15 +423,9 @@ class WizardAgent:
         return count
 
     def _find_safe_path_enhanced(self, start, goal, state, wiz_name):
-        """
-        Enhanced safe–path search using a Dijkstra-like algorithm.
-        The cost per step is:
-           cost = 1 + 3*(# adjacent death eaters) + (2 if the cell was visited before)
-        Returns a tuple (path, total_cost, cumulative_risk). If no path is found, returns (None, inf, inf).
-        """
         de_positions = self._get_death_eater_positions(state)
         frontier = PriorityQueue(order=min, f=lambda x: x[0])
-        frontier.append((0, 0, [start]))  # (cumulative_cost, cumulative_risk, path)
+        frontier.append((0, 0, [start]))
         visited = {}
         while len(frontier) > 0:
             cost, risk, path = frontier.pop()
@@ -374,13 +438,11 @@ class WizardAgent:
             for neighbor in self._get_neighbors(current, state):
                 if not self._is_passable(neighbor, state):
                     continue
-                add_cost = 1
-                add_risk = self._count_adjacent_de(neighbor, de_positions)
-                add_cost += 3 * add_risk
+                add_cost = 1 + 3 * self._count_adjacent_de(neighbor, de_positions)
                 if neighbor in self.visited[wiz_name]:
-                    add_cost += 2  # extra penalty for revisiting cells
+                    add_cost += 2
                 new_cost = cost + add_cost
-                new_risk = risk + add_risk
+                new_risk = risk + self._count_adjacent_de(neighbor, de_positions)
                 new_path = path + [neighbor]
                 frontier.append((new_cost, new_risk, new_path))
         return None, float('inf'), float('inf')
@@ -392,16 +454,11 @@ class WizardAgent:
         return None
 
     def _safety_distance(self, pos, de_positions):
-        """Return the Manhattan distance from pos to the closest death eater."""
         if not de_positions:
             return 10
         return min(abs(pos[0] - de[0]) + abs(pos[1] - de[1]) for de in de_positions)
 
     def _choose_safer_move(self, pos, state):
-        """
-        Fallback method: choose among neighbor cells the one that maximizes safety.
-        Uses random–tie–breaking helpers from utils.
-        """
         de_positions = self._get_death_eater_positions(state)
         neighbors = self._get_neighbors(pos, state)
         safe_neighbors = [n for n in neighbors if self._count_adjacent_de(n, de_positions) == 0]
@@ -410,3 +467,7 @@ class WizardAgent:
         if neighbors:
             return argmin_random_tie(neighbors, key=lambda n: self._count_adjacent_de(n, de_positions))
         return None
+
+##########################################
+# END OF FILE
+##########################################
