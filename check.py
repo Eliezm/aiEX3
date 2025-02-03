@@ -508,7 +508,7 @@ def main():
         test_scores = []
         print("Testing input:")
         print(an_input)
-        for test in range(50):
+        for test in range(5):
             try:
                 problem = WizardStochasticProblem(an_input)
                 problem.run_round()

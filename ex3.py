@@ -3,7 +3,6 @@ from utils import PriorityQueue, argmin_random_tie, argmax_random_tie, shuffled,
 
 ids = ['207476763']
 
-
 class State:
     """
     A hashable state that contains:
@@ -35,7 +34,14 @@ class State:
 
 
 class OptimalWizardAgent:
+    """
+    This agent computes the optimal finite–horizon policy using full Bellman backups
+    (with expectation over stochastic transitions) and recursion with memoization.
+    It implements the optimal policy for the stochastic wizard problem up to an infinitesimal
+    approximation (i.e., when the number of turns is small, the backup approximates optimality).
+    """
     def __init__(self, initial):
+        # Read the map and time information.
         self.map = tuple(tuple(row) for row in initial['map'])
         self.turns_to_go = initial['turns_to_go']
         self.width = len(self.map[0])
@@ -45,14 +51,12 @@ class OptimalWizardAgent:
         self.horcruxes_initial = initial['horcrux']
         self.death_eaters_initial = initial['death_eaters']
 
-        # Compute passable positions.
         self.passable = self._compute_passable_positions()
 
         self.death_eaters_paths = {name: info['path'] for name, info in self.death_eaters_initial.items()}
 
         initial_wizard_positions = tuple((name, tuple(info['location'])) for name, info in self.wizards_initial.items())
-        initial_horcrux_states = tuple(
-            (name, tuple(info['location']), True) for name, info in self.horcruxes_initial.items())
+        initial_horcrux_states = tuple((name, tuple(info['location']), True) for name, info in self.horcruxes_initial.items())
         initial_death_eater_indices = tuple((name, info['index']) for name, info in self.death_eaters_initial.items())
         self.initial_state = State(initial_wizard_positions, initial_horcrux_states, initial_death_eater_indices,
                                    self.turns_to_go)
@@ -64,8 +68,8 @@ class OptimalWizardAgent:
 
     def act(self, state_dict):
         """
-        Given the current environment state as a dictionary, convert it to our State object and
-        return the pre–computed optimal joint action.
+        Given the current environment state as a dictionary, convert it to our State object
+        and return the pre–computed optimal joint action.
         """
         wizard_positions = tuple((name, tuple(info['location'])) for name, info in state_dict['wizards'].items())
         horcrux_states = tuple((name, tuple(info['location']), info['location'] != (-1, -1))
@@ -115,11 +119,9 @@ class OptimalWizardAgent:
         actions_per_wizard = []
         for wiz_name, pos in state.wizard_positions:
             wizard_actions = []
-            # Check for horcrux destruction.
             for (h_name, h_pos, exists) in state.horcrux_states:
                 if exists and pos == h_pos:
                     wizard_actions.append(("destroy", wiz_name, h_name))
-            # Movement actions.
             for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
                 new_pos = (pos[0] + dx, pos[1] + dy)
                 if new_pos in self.passable:
@@ -129,6 +131,12 @@ class OptimalWizardAgent:
         return list(itertools.product(*actions_per_wizard))
 
     def _get_transitions(self, state, action):
+        """
+        Given a state and a joint action, return a list of (p, new_state, immediate_reward)
+        tuples representing the stochastic outcomes.
+        The wizard actions are applied deterministically, then the stochastic moves
+        of death eaters and horcruxes are enumerated.
+        """
         # 1. Apply wizard actions.
         new_wizard_positions = list(state.wizard_positions)
         new_horcrux_states = list(state.horcrux_states)
@@ -149,7 +157,6 @@ class OptimalWizardAgent:
                     if w_name == wiz_name:
                         new_wizard_positions[i] = (w_name, new_pos)
                         break
-            # "wait" leaves the wizard’s position unchanged.
 
         # 2. Enumerate death eater outcomes.
         de_outcomes_list = []
@@ -167,9 +174,9 @@ class OptimalWizardAgent:
                     outcomes.append((L - 1, 0.5))
                     outcomes.append((L - 2, 0.5))
                 else:
-                    outcomes.append((index - 1, 1 / 3))
-                    outcomes.append((index, 1 / 3))
-                    outcomes.append((index + 1, 1 / 3))
+                    outcomes.append((index - 1, 1/3))
+                    outcomes.append((index, 1/3))
+                    outcomes.append((index + 1, 1/3))
             de_outcomes_list.append((de_name, outcomes))
 
         # 3. Enumerate horcrux outcomes.
@@ -209,7 +216,7 @@ class OptimalWizardAgent:
                     h_name = hor_outcomes_list[idx][0]
                     new_hor_states.append((h_name, new_pos, exists))
                 total_prob = prob_de * prob_hor
-                # Compute penalty: for each wizard that ends up in the same cell as a death eater, subtract 1.
+                # Compute penalty: subtract 1 point for each wizard sharing a cell with a death eater.
                 penalty = 0
                 for w_name, w_pos in new_wizard_positions:
                     if w_pos in de_positions:
@@ -221,7 +228,7 @@ class OptimalWizardAgent:
         return transitions
 
     def _compute_passable_positions(self):
-        """Return a set of coordinates (i,j) for cells that are passable (i.e. 'P' or 'V')."""
+        """Return a set of coordinates (i,j) for cells that are passable (i.e. cells with 'P' or 'V')."""
         passable = set()
         for i in range(len(self.map)):
             for j in range(len(self.map[0])):
@@ -230,12 +237,20 @@ class OptimalWizardAgent:
         return passable
 
 
-##########################################
-# HEURISTIC WIZARD AGENT
-##########################################
-
 class WizardAgent:
-
+    """
+    A heuristic-based wizard agent that computes a “safe” path toward an active horcrux.
+    The enhanced Dijkstra-like search adds extra cost for:
+      - Each move (base cost 1)
+      - Cells adjacent to death eaters (3× per adjacent death eater)
+      - Revisited cells (penalty of 2 per revisit)
+    Each candidate target horcrux is scored by:
+      • A bonus of 10 for eventually destroying it,
+      • Minus the computed safe-path cost,
+      • Minus twice the cumulative risk (total adjacent death eater counts along the path),
+      • Plus a bonus proportional to the wizard’s current safety (Manhattan distance to the nearest death eater).
+    If no safe path is found, the agent moves to the neighbor that maximizes safety.
+    """
     def __init__(self, initial):
         self.map = tuple(tuple(row) for row in initial['map'])
         self.wizards = initial['wizards']
@@ -245,11 +260,13 @@ class WizardAgent:
         self.width = len(self.map[0])
         self.height = len(self.map)
         self.passable = self._compute_passable_positions()
+        # For each wizard, track visited cells to discourage loops.
         self.visited = {wiz: set() for wiz in self.wizards.keys()}
 
     def act(self, state):
         actions = []
         de_positions = self._get_death_eater_positions(state)
+        # Build a dictionary of active horcruxes (ignore those that have been destroyed)
         active_horcruxes = {}
         for h_name, info in state['horcrux'].items():
             if info['location'] != (-1, -1):
@@ -324,6 +341,7 @@ class WizardAgent:
         return positions
 
     def _count_adjacent_de(self, pos, de_positions):
+        """Count how many death eaters are adjacent (8-neighborhood) to pos."""
         count = 0
         x, y = pos
         for dx in [-1, 0, 1]:
@@ -335,10 +353,15 @@ class WizardAgent:
         return count
 
     def _find_safe_path_enhanced(self, start, goal, state, wiz_name):
+        """
+        Enhanced safe–path search using a Dijkstra-like algorithm.
+        The cost per step is:
+           cost = 1 + 3*(# adjacent death eaters) + (2 if the cell was visited before)
+        Returns a tuple (path, total_cost, cumulative_risk). If no path is found, returns (None, inf, inf).
+        """
         de_positions = self._get_death_eater_positions(state)
-        # The frontier items are tuples: (cumulative_cost, cumulative_risk, path)
         frontier = PriorityQueue(order=min, f=lambda x: x[0])
-        frontier.append((0, 0, [start]))
+        frontier.append((0, 0, [start]))  # (cumulative_cost, cumulative_risk, path)
         visited = {}
         while len(frontier) > 0:
             cost, risk, path = frontier.pop()
@@ -355,7 +378,7 @@ class WizardAgent:
                 add_risk = self._count_adjacent_de(neighbor, de_positions)
                 add_cost += 3 * add_risk
                 if neighbor in self.visited[wiz_name]:
-                    add_cost += 2  # discourage cycles
+                    add_cost += 2  # extra penalty for revisiting cells
                 new_cost = cost + add_cost
                 new_risk = risk + add_risk
                 new_path = path + [neighbor]
@@ -369,14 +392,15 @@ class WizardAgent:
         return None
 
     def _safety_distance(self, pos, de_positions):
+        """Return the Manhattan distance from pos to the closest death eater."""
         if not de_positions:
             return 10
         return min(abs(pos[0] - de[0]) + abs(pos[1] - de[1]) for de in de_positions)
 
     def _choose_safer_move(self, pos, state):
         """
-        Fallback method: choose a neighbor that is safest.
-        Here we use the random–tie–breaking helpers from utils.
+        Fallback method: choose among neighbor cells the one that maximizes safety.
+        Uses random–tie–breaking helpers from utils.
         """
         de_positions = self._get_death_eater_positions(state)
         neighbors = self._get_neighbors(pos, state)
@@ -386,5 +410,3 @@ class WizardAgent:
         if neighbors:
             return argmin_random_tie(neighbors, key=lambda n: self._count_adjacent_de(n, de_positions))
         return None
-
-
